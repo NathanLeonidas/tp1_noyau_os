@@ -20,8 +20,8 @@ $(BIN_DIR):
 $(BIN_DIR)/section1: section1/section1.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
 
-$(BIN_DIR)/section2: section2/section2.c | $(BIN_DIR)
-	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
+$(BIN_DIR)/section2: section2/section2.c $(UTILS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 run1: $(BIN_DIR)/section1
 	./$(BIN_DIR)/section1 $(MOTS)

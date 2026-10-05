@@ -4,6 +4,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <string.h>
+#include "../utils/timer.h"
 
 #define BUFFER_SIZE 4096
 
@@ -337,7 +338,9 @@ int main(int argc, char *argv[])
     
     system("mkdir -p tmp bin");
     
-    process_task_wrapper(&args);
+    double elapsed = measure_time(process_task_wrapper, &args);
+    printf("Temps d'exécution : %.6f secondes\n", elapsed);
+
     
     return 0;
 }
