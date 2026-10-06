@@ -25,13 +25,34 @@ typedef struct {
 const size_t 		numerrtype = 3;
 const char* const 	err_strs[]  = {"CRITICAL", "ERROR", "FAILED_LOGIN", 0};
 
+static int _erroranddie(int cond, const char *fname, int exittype);
+static void _searchbuferrs(proc_mesg_t *shm, int ch_id, char *buf, size_t bufsize);
+static void _childproc(proc_args_t *args, proc_mesg_t *shm, int ch_id);
+static void _process_task_wrapper(proc_args_t *args);
+
+/*** static int _erroranddie(int cond, const char *fname, int exittype);
+Purpose: check if cond true, then perror out and exit with exittype
+Returns: cond
+*/
+static int _erroranddie(int cond, const char *fname, int exittype) {
+	if (cond) {
+		perror(fname);
+		exit(exittype);
+	}
+	return cond;
+}
+
+
+/*** static void _searchbuferrs(proc_mesg_t *shm, int ch_id, char *buf, size_t bufsize);
+Purpose: search buf for errors and tally them in shm at offset ch_id
+*/
 static void _searchbuferrs(proc_mesg_t *shm, int ch_id, char *buf, size_t bufsize) {
 	const size_t 		err_strln[] = {strlen(err_strs[0]), strlen(err_strs[1]),
 									   strlen(err_strs[2]), 0};
 	
 	size_t bufleftlen;
 	char *offs, *endoffs;
-	int i;
+	unsigned int i;
 	
 	
 	for (i = 0; i < numerrtype; ++i) {
@@ -51,13 +72,16 @@ static void _searchbuferrs(proc_mesg_t *shm, int ch_id, char *buf, size_t bufsiz
 	
 }
 
+
+
 /*** static void _childproc(proc_args_t *args, proc_mesg_t *shm, int ch_id)
 Purpose: child process entry point, calculates start/end offs and 
-			sets up buffer */
+			sets up buffer 
+*/
+const size_t buffer_pad = 4096;
 static void _childproc(proc_args_t *args, proc_mesg_t *shm, int ch_id) {
-	int file, i;
-	size_t fsize, startoffs, endoffs, blocksize;
-	char t;
+	int file, o;
+	size_t fsize, oldstartoffs, startoffs, endoffs, endoffspad, blocksize;
 	char *buf;
 	
 	file = args->file[ch_id & 1];
@@ -67,27 +91,34 @@ static void _childproc(proc_args_t *args, proc_mesg_t *shm, int ch_id) {
 	
 	blocksize = fsize / (args->n);
 	startoffs = blocksize * (ch_id >> 1);
+	oldstartoffs = startoffs;
 	endoffs = startoffs + blocksize >= fsize ? fsize : startoffs + blocksize;
+	endoffspad = endoffs + buffer_pad >= fsize ? fsize : endoffs + buffer_pad;
+	
+	buf = calloc(endoffspad-startoffs, sizeof(char));
+	_erroranddie(buf == NULL, "calloc", EXIT_FAILURE);
+	
+	o = pread(file, buf, sizeof(char)*(endoffspad-startoffs), startoffs);
+	_erroranddie(o <= 0, "pread", EXIT_FAILURE);
 	
 	/* align start to file start, file end or \n */
 	if (startoffs != 0) {
 		while (TRUE) {
-			pread(file, &t, sizeof(char), startoffs);
-			if (t == '\n' || startoffs >= fsize)
+			if (buf[startoffs-oldstartoffs] == '\n' || startoffs >= endoffspad)
 				break;
 			else
 				++startoffs;
 		}
 	}
-	//nothing to do
+	
+	/* nothing to do */
 	if (startoffs >= fsize-1)
 		return;
 	
 	/* do the same for end */
-	if (endoffs < fsize - 1) {
+	if (endoffs < endoffspad - 1) {
 		while (TRUE) {
-			i = pread(file, &t, sizeof(char), endoffs);
-			if (t == '\n' || endoffs >= fsize || i == 0) {
+			if (buf[endoffs-oldstartoffs] == '\n' || endoffs >= endoffspad) {
 				++endoffs;
 				break;
 			} else
@@ -95,15 +126,8 @@ static void _childproc(proc_args_t *args, proc_mesg_t *shm, int ch_id) {
 		}
 	}
 	
-	buf = calloc(endoffs-startoffs, sizeof(char));
-	if (buf == NULL) {
-		perror("calloc");
-		exit(EXIT_FAILURE);
-	}
 	
-	pread(file, buf, sizeof(char)*(endoffs-startoffs), startoffs);
-	
-	_searchbuferrs(shm, ch_id, buf, endoffs-startoffs);
+	_searchbuferrs(shm, ch_id, buf+startoffs-oldstartoffs, endoffs-startoffs);
 	
 	fflush(stdout);
 	free(buf);
@@ -113,7 +137,8 @@ static void _childproc(proc_args_t *args, proc_mesg_t *shm, int ch_id) {
 Purpose : high level program logic, create children and count their findings
 */
 static void _process_task_wrapper(proc_args_t *args) {
-	int shm_fd, i, j, nproc, outfile, oldstdout;
+	int shm_fd, i, nproc, outfile, oldstdout;
+	unsigned int j;
 	size_t shm_size;
 	const char *shm_name = "/sharedmem";
 	proc_mesg_t *shm;
@@ -124,24 +149,21 @@ static void _process_task_wrapper(proc_args_t *args) {
 	nproc = args->n * 2;
 	shm_size = sizeof(proc_mesg_t) * nproc;
 	
-	shm_fd = shm_open(shm_name, O_RDWR | O_TRUNC, 0x1b6);
+	shm_fd = shm_open(shm_name, O_RDWR | O_TRUNC | O_CREAT, 0x1b6);
+	_erroranddie(shm_fd < 0, "shm_open", EXIT_FAILURE);
 	ftruncate(shm_fd, shm_size);
 	shm = (proc_mesg_t*) mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+	_erroranddie(shm == NULL, "mmap", EXIT_FAILURE);
 	
 	cpid = calloc(nproc, sizeof(pid_t));
-	if (cpid == NULL) {
-		perror("calloc");
-		exit(EXIT_FAILURE);
-	}
+	_erroranddie(cpid == NULL, "calloc", EXIT_FAILURE);
 	
 	/* fork children */
 	for (i = 0; i < nproc; ++i) {
 		cpid[i] = fork();
+		_erroranddie(cpid[i] == -1, "fork", EXIT_FAILURE);
 		
-		if (cpid[i] == -1) {
-			perror("fork");
-			exit(EXIT_FAILURE);
-		} else if (cpid[i] == 0) {
+		if (cpid[i] == 0) {
 			_childproc(args, shm, i);
 			fflush(stdout);
 			exit(EXIT_SUCCESS);
@@ -150,16 +172,12 @@ static void _process_task_wrapper(proc_args_t *args) {
 	
 	/* wait for all nproc children to die */
 	for (i = 0; i < nproc; ++i) {
-		if (wait(NULL) == -1)
-			perror("wait");
+		_erroranddie(wait(NULL) == -1, "wait", EXIT_FAILURE);
 	}
 
 	/* tally up all errors and stuffs found */
 	errs = (proc_mesg_t*) calloc(2, sizeof(proc_mesg_t));
-	if (errs == NULL) {
-		perror("calloc");
-		exit(EXIT_FAILURE);
-	}
+	_erroranddie(errs == NULL, "calloc", EXIT_FAILURE);
 	errs[0].logno = 0;
 	errs[1].logno = 1;
 	
@@ -170,10 +188,7 @@ static void _process_task_wrapper(proc_args_t *args) {
 	fflush(stdout);
 	
 	outfile = open("./"OUTFILE_NAME, O_WRONLY | O_TRUNC | O_CREAT, 0x1b6);
-	if (outfile < 0) {
-		perror("open");
-		exit(EXIT_FAILURE);
-	}
+	_erroranddie(outfile < 0, "open", EXIT_FAILURE);
 	
 	oldstdout = dup(STDOUT_FILENO);
 	dup2(outfile, STDOUT_FILENO);
@@ -221,11 +236,7 @@ int main(int argc, char *argv[]) {
 	/* check for file validity first */
 	for (i = 0; i < 2; ++i) {
 		args.file[i] = open(argv[i+1], O_RDONLY);
-		if (args.file[i] < 0) {
-			perror("open");
-			exit(EXIT_FAILURE);
-		}
-		//printf("file %i\n", args.file[i]);
+		_erroranddie(args.file[i] < 0, "open", EXIT_FAILURE);
 	}
 	
 	_process_task_wrapper(&args);
