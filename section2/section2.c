@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <string.h>
+#include <time.h>
 
 #define OUTFILE_NAME "RESULT_PROCESS.txt"
 #define TRUE 1
