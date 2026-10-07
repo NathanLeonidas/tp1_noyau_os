@@ -217,6 +217,9 @@ Purpose : entry point
 */
 int main(int argc, char *argv[]) {
 	int i;
+	long dt, dnt;
+	float t;
+	struct timespec start, end;
 	
 	if (argc != 4) {
 		fprintf(stderr, "Usage: %s <log1> <log2> <N>\n", argv[0]);
@@ -239,7 +242,19 @@ int main(int argc, char *argv[]) {
 		_erroranddie(args.file[i] < 0, "open", EXIT_FAILURE);
 	}
 	
+	
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	 
 	_process_task_wrapper(&args);
+	
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	
+	dt  = end.tv_sec - start.tv_sec;
+    dnt = end.tv_nsec - start.tv_nsec;
+	
+	t = (float) dt + (float) dnt / 1e9f;
+	
+	printf("Execution time : %fs", t);
 	
 	for (i = 0; i < 2; ++i) 
 		close(args.file[i]);
